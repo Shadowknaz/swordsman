@@ -1,0 +1,6 @@
+{
+  "name": "Exanima Combat Prototype - PS1 Edition",
+  "description": "Modular, physics-driven Exanima melee combat simulator with PS1 retro rendering, swept blade collision, edge alignment, balance kinematics, and procedural audio.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
