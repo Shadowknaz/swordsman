@@ -35,6 +35,16 @@ export interface EngineUIState {
   attackPhase: AttackPhase;
   isCancelable: boolean;
   bufferedAction: string | null;
+
+  // Active Ragdoll & Kinematics telemetry
+  ragdollState: 'active' | 'limp_ragdoll' | 'getting_up' | 'stumbled';
+  kp: number;
+  kd: number;
+  kBalance: number;
+  jointStrain: number;
+  uprightTorque: number;
+  isGhostVisible: boolean;
+  isWeaponBlocked: boolean;
 }
 
 export class GameEngine {
@@ -122,6 +132,8 @@ export class GameEngine {
     this.input.onUserInteraction = () => this.audio.init();
     this.input.onLockToggle = () => this.toggleTargetLock();
     this.input.onFootworkDodge = () => this.tryDodge();
+    this.input.onRagdollToggle = () => this.toggleRagdoll();
+    this.input.onGhostToggle = () => this.toggleGhostRig();
     this.hero.onFootstep = (isDash) => this.audio.playStep(isDash);
     this.hero.onAnimationCanceled = () => {
       this.vfx.triggerCancelFlash(this.hero.pos);
@@ -626,21 +638,13 @@ export class GameEngine {
 
   private emitUIState(): void {
     if (!this.onStateUpdate) return;
-    const stability = Math.max(
-      0,
-      100 -
-        Math.round(
-          (Math.abs(this.hero.balancePitch) + Math.abs(this.hero.balanceRoll)) *
-            90 +
-            (this.hero.stumbleTimer > 0 ? 30 : 0)
-        )
-    );
+    const stability = this.hero.ragdoll.balanceStability;
 
     this.onStateUpdate({
       guardZone: this.hero.guardZone,
       stanceSide: this.hero.stanceSide,
       balanceStability: stability,
-      isStumbled: this.hero.stumbleTimer > 0,
+      isStumbled: this.hero.ragdoll.state === 'stumbled' || this.hero.stumbleTimer > 0,
       isDashing: this.hero.dashTimer > 0,
       strikeMode: this.input.gesture.strikeMode,
       lastHit: this.lastTelemetry,
@@ -649,7 +653,40 @@ export class GameEngine {
       attackPhase: this.hero.attackPhase,
       isCancelable: this.hero.isCancelable(),
       bufferedAction: this.input.getBufferedActionSummary(),
+
+      // Active Ragdoll additions
+      ragdollState: this.hero.ragdoll.state,
+      kp: Math.round(this.hero.ragdoll.kp),
+      kd: Math.round(this.hero.ragdoll.kd * 10) / 10,
+      kBalance: Math.round(this.hero.ragdoll.kBalance),
+      jointStrain: Math.round(this.hero.ragdoll.currentStrain * 100) / 100,
+      uprightTorque: Math.round(this.hero.ragdoll.lastBalanceTorque.length() * 10) / 10,
+      isGhostVisible: this.hero.isGhostVisible(),
+      isWeaponBlocked: this.hero.ragdoll.isWeaponBlocked,
     });
+  }
+
+  public toggleRagdoll(): void {
+    this.hero.toggleRagdoll();
+    if (this.hero.ragdoll.state === 'limp_ragdoll') {
+      this.audio.playCancelWhoosh();
+    }
+    this.emitUIState();
+  }
+
+  public toggleGhostRig(): void {
+    this.hero.setGhostVisible(!this.hero.isGhostVisible());
+    this.emitUIState();
+  }
+
+  public setRagdollPreset(preset: 'gang_beasts' | 'human_fall_flat' | 'iron_knight'): void {
+    this.hero.applyRagdollPreset(preset);
+    this.emitUIState();
+  }
+
+  public setRagdollTuning(kp: number, kd: number, kBalance: number): void {
+    this.hero.setRagdollTuning(kp, kd, kBalance);
+    this.emitUIState();
   }
 
   public resetDummy(): void {

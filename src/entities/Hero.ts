@@ -5,7 +5,7 @@
  */
 
 import * as THREE from 'three';
-import { HERO_CONFIG, ARENA_CONFIG, AttackPhase, STRIKE_PHASES } from '../config/combatConfig.ts';
+import { HERO_CONFIG, ARENA_CONFIG, AttackPhase, STRIKE_PHASES, DUMMY_CONFIG } from '../config/combatConfig.ts';
 import {
   applyPS1MaterialShader,
   applyVertexAO,
@@ -18,6 +18,8 @@ import {
   createBlobShadowTexture,
 } from '../rendering/proceduralTextures.ts';
 import { normalizeAngle, GuardZone, StrikeMode } from '../physics/combatMath.ts';
+import { ActiveRagdoll } from '../physics/ActiveRagdoll.ts';
+import { GhostRig } from '../physics/GhostRig.ts';
 
 export class Hero {
   public group = new THREE.Group();
@@ -31,6 +33,10 @@ export class Hero {
   public leftLeg: THREE.Group;
   public rightLeg: THREE.Group;
   public blobShadow: THREE.Mesh;
+
+  // Active Ragdoll and Ghost Rig
+  public ragdoll: ActiveRagdoll;
+  public ghost: GhostRig;
 
   public pos = new THREE.Vector3(
     HERO_CONFIG.INITIAL_POSITION.x,
@@ -321,6 +327,12 @@ export class Hero {
     this.swordGroup.add(blade);
 
     scene.add(this.group);
+
+    // Active Ragdoll and Ghost Rig initialization
+    this.ragdoll = new ActiveRagdoll();
+    this.ghost = new GhostRig();
+    scene.add(this.ghost.helperGroup);
+
     this.initWorldBladeCoords();
   }
 
@@ -454,8 +466,8 @@ export class Hero {
     const dashSpeed = moveF > 0 ? HERO_CONFIG.SPEED.DASH_FORWARD : HERO_CONFIG.SPEED.DASH_BACKWARD;
     this.vel.addScaledVector(this._tempVec, dashSpeed);
 
-    this.balancePitchVel += moveF * 2.4;
-    this.balanceRollVel += moveS * 2.4;
+    this.ragdoll.rootAngVel.x += moveF * 1.8;
+    this.ragdoll.rootAngVel.z += moveS * 1.8;
 
     this.dashCooldown = HERO_CONFIG.TIMERS.DASH_COOLDOWN;
     this.dashTimer = HERO_CONFIG.TIMERS.DASH_DURATION;
@@ -596,29 +608,9 @@ export class Hero {
     this.vel.lerp(this._targetVel, Math.min(1.0, dt * traction));
     this.pos.addScaledVector(this.vel, dt);
 
-    // Center of Mass (Balance) Spring
-    const balSpring = HERO_CONFIG.BALANCE.SPRING_K;
-    const balDamp = HERO_CONFIG.BALANCE.DAMPING;
-    const maxTilt = HERO_CONFIG.BALANCE.MAX_TILT_RAD;
-
-    const pitchAcc =
-      (forwardPull * 0.18 - this.balancePitch) * balSpring - this.balancePitchVel * balDamp;
-    const rollAcc =
-      (lateralPull * 0.22 - this.balanceRoll) * balSpring - this.balanceRollVel * balDamp;
-
-    this.balancePitchVel += pitchAcc * dt;
-    this.balanceRollVel += rollAcc * dt;
-    this.balancePitch = Math.max(
-      -maxTilt,
-      Math.min(maxTilt, this.balancePitch + this.balancePitchVel * dt)
-    );
-    this.balanceRoll = Math.max(
-      -maxTilt,
-      Math.min(maxTilt, this.balanceRoll + this.balanceRollVel * dt)
-    );
-
-    this.pelvis.rotation.x = this.balancePitch;
-    this.pelvis.rotation.z = -this.balanceRoll;
+    // Forward inertia pulls to physical active ragdoll
+    this.ragdoll.rootAngVel.x += (forwardPull * 0.25 - this.ragdoll.rootRot.x * 2.0) * dt;
+    this.ragdoll.rootAngVel.z += (lateralPull * 0.3 - this.ragdoll.rootRot.z * 2.0) * dt;
 
     // Boundary constraints: Separation from dummy
     const toHeroX = this.pos.x - dummyPos.x;
@@ -637,25 +629,68 @@ export class Hero {
       this.pos.z = (this.pos.z / distFromCenter) * ARENA_CONFIG.MAX_PLAYER_RADIUS;
     }
 
-    this.group.position.copy(this.pos);
-    this.group.rotation.y = this.angle;
+    // Update Ghost Rig target kinematics
+    this.ghost.update(
+      dt,
+      this.pos,
+      this.angle,
+      this.vel,
+      this.guardZone,
+      this.stanceSide,
+      this.attackPhase,
+      this.activeStrikeMode,
+      this.activeStrikePower,
+      this.activeStrikeDir,
+      false,
+      this.head.rotation.y,
+      this.dashTimer > 0
+    );
 
-    // Update blob shadow
-    if (this.blobShadow) {
-      const leanWorldX =
-        this._forwardVec.x * this.balancePitch * 0.35 +
-        this._rightVec.x * this.balanceRoll * 0.35;
-      const leanWorldZ =
-        this._forwardVec.z * this.balancePitch * 0.35 +
-        this._rightVec.z * this.balanceRoll * 0.35;
-      this.blobShadow.position.set(
-        this.pos.x + leanWorldX,
-        0.015,
-        this.pos.z + leanWorldZ
-      );
+    // Sync root coordinates into physical ragdoll
+    if (this.ragdoll.state !== 'limp_ragdoll') {
+      this.ragdoll.rootPos.x = this.pos.x;
+      this.ragdoll.rootPos.z = this.pos.z;
     }
 
+    // Step Active Ragdoll (PD motors, honest upright balance, obstacle resistance)
+    this.ragdoll.step(dt, this.ghost, dummyPos, DUMMY_CONFIG.COLLISION_RADIUS);
+
+    // Synchronize Three.js visual meshes with physical bodies
+    this.syncMeshesFromRagdoll();
+
     this.updateLegs(dt, moveStrafe);
+  }
+
+  public syncMeshesFromRagdoll(): void {
+    if (this.ragdoll.state === 'limp_ragdoll') {
+      this.pos.x = this.ragdoll.rootPos.x;
+      this.pos.z = this.ragdoll.rootPos.z;
+    }
+
+    this.pos.y = this.ragdoll.rootPos.y;
+    this.balancePitch = this.ragdoll.rootRot.x;
+    this.balanceRoll = -this.ragdoll.rootRot.z;
+
+    this.group.position.set(this.pos.x, 0, this.pos.z);
+    this.group.rotation.y = this.angle;
+
+    this.pelvis.position.y = this.ragdoll.rootPos.y;
+    this.pelvis.rotation.set(this.ragdoll.rootRot.x, 0, this.ragdoll.rootRot.z);
+
+    this.torso.rotation.copy(this.ragdoll.torsoBone.rot);
+    this.head.rotation.copy(this.ragdoll.headBone.rot);
+    this.leftArm.rotation.copy(this.ragdoll.leftShoulderBone.rot);
+    this.rightShoulder.rotation.copy(this.ragdoll.rightShoulderBone.rot);
+    this.rightElbow.rotation.copy(this.ragdoll.rightElbowBone.rot);
+    this.swordGroup.rotation.copy(this.ragdoll.swordBone.rot);
+    this.leftLeg.rotation.copy(this.ragdoll.leftLegBone.rot);
+    this.rightLeg.rotation.copy(this.ragdoll.rightLegBone.rot);
+
+    if (this.blobShadow) {
+      const shadowScale = Math.max(0.4, Math.min(1.2, this.pos.y / 0.86));
+      this.blobShadow.scale.set(shadowScale, shadowScale, shadowScale);
+      this.blobShadow.position.set(this.pos.x, 0.015, this.pos.z);
+    }
   }
 
   private updateLegs(dt: number, moveStrafe: number): void {
@@ -791,7 +826,30 @@ export class Hero {
     return this.currTipWorld.distanceTo(this.prevTipWorld) / Math.max(0.001, dt);
   }
 
+  public toggleRagdoll(): void {
+    this.ragdoll.toggleRagdoll();
+  }
+
+  public setGhostVisible(visible: boolean): void {
+    this.ghost.setVisible(visible);
+  }
+
+  public isGhostVisible(): boolean {
+    return this.ghost.helperGroup.visible;
+  }
+
+  public applyRagdollPreset(preset: 'gang_beasts' | 'human_fall_flat' | 'iron_knight'): void {
+    this.ragdoll.applyPreset(preset);
+  }
+
+  public setRagdollTuning(kp: number, kd: number, kBalance: number): void {
+    this.ragdoll.kp = kp;
+    this.ragdoll.kd = kd;
+    this.ragdoll.kBalance = kBalance;
+  }
+
   public dispose(): void {
+    this.ghost.dispose();
     this.group.traverse((obj) => {
       if (obj instanceof THREE.Mesh) {
         obj.geometry.dispose();

@@ -25,6 +25,12 @@ export const GameViewport: React.FC = () => {
         setIsMuted(next);
       }
       if (e.code === 'KeyR') {
+        engine.toggleRagdoll();
+      }
+      if (e.code === 'KeyG') {
+        engine.toggleGhostRig();
+      }
+      if (e.code === 'KeyT') {
         engine.resetDummy();
       }
     };
@@ -53,6 +59,22 @@ export const GameViewport: React.FC = () => {
     engineRef.current?.toggleTargetLock();
   };
 
+  const handleToggleRagdoll = () => {
+    engineRef.current?.toggleRagdoll();
+  };
+
+  const handleToggleGhostRig = () => {
+    engineRef.current?.toggleGhostRig();
+  };
+
+  const handleSetRagdollPreset = (preset: 'gang_beasts' | 'human_fall_flat' | 'iron_knight') => {
+    engineRef.current?.setRagdollPreset(preset);
+  };
+
+  const handleSetRagdollTuning = (kp: number, kd: number, kBalance: number) => {
+    engineRef.current?.setRagdollTuning(kp, kd, kBalance);
+  };
+
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#22202a]">
       {/* 3D WebGL canvas container */}
@@ -72,6 +94,15 @@ export const GameViewport: React.FC = () => {
         onResetDummy={handleResetDummy}
         isTargetLocked={uiState?.isTargetLocked ?? false}
         onToggleTargetLock={handleToggleTargetLock}
+        ragdollState={uiState?.ragdollState}
+        isGhostVisible={uiState?.isGhostVisible}
+        kp={uiState?.kp}
+        kd={uiState?.kd}
+        kBalance={uiState?.kBalance}
+        onToggleRagdoll={handleToggleRagdoll}
+        onToggleGhostRig={handleToggleGhostRig}
+        onSetRagdollPreset={handleSetRagdollPreset}
+        onSetRagdollTuning={handleSetRagdollTuning}
       />
     </div>
   );

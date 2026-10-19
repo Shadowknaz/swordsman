@@ -57,6 +57,29 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({ state }) => {
           )}
         </div>
 
+        {/* Active Ragdoll State Badge */}
+        <div className="mb-2">
+          {state.ragdollState === 'limp_ragdoll' ? (
+            <div className="text-[10px] font-bold px-2 py-1 rounded bg-rose-950/90 text-rose-300 border border-rose-600 flex items-center justify-between animate-pulse">
+              <span>LIMP RAGDOLL (COLLAPSED)</span>
+              <span className="text-[9px] bg-rose-900 px-1 rounded text-white">[R] GET UP</span>
+            </div>
+          ) : state.ragdollState === 'getting_up' ? (
+            <div className="text-[10px] font-bold px-2 py-1 rounded bg-cyan-950/90 text-cyan-300 border border-cyan-500 flex items-center justify-between">
+              <span>RECOVERING BALANCE</span>
+              <span className="text-[9px] text-cyan-200">PUSHING UP...</span>
+            </div>
+          ) : (
+            <div className="text-[10px] px-2 py-0.5 rounded bg-[#16141c] text-[#a49ba8] border border-[#2b2734] flex items-center justify-between">
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />
+                ACTIVE RAGDOLL [PD-MOTOR]
+              </span>
+              <span className="font-mono text-[9px] text-[#8a8292]">Kp:{state.kp} Kd:{state.kd}</span>
+            </div>
+          )}
+        </div>
+
         {/* Guard & Chamber */}
         <div className="space-y-1.5 text-xs">
           <div className="flex items-center justify-between text-[#8a8292]">
@@ -198,6 +221,31 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({ state }) => {
           >
             {state.flailSpinSpeed} rad/s
           </span>
+        </div>
+
+        {/* Active Ragdoll Kinematics Telemetry */}
+        <div className="mt-2 pt-2 border-t border-[#25222c] space-y-1 font-mono text-[10px]">
+          <div className="flex justify-between items-center">
+            <span className="text-[#8a8292]">UPRIGHT TORQUE:</span>
+            <span className="text-amber-300 font-semibold">{state.uprightTorque} N·m</span>
+          </div>
+          <div className="flex justify-between items-center">
+            <span className="text-[#8a8292]">JOINT STRAIN:</span>
+            <span className={state.jointStrain > 0.4 ? 'text-rose-400 font-bold' : 'text-[#a49ba8]'}>
+              {state.jointStrain} rad
+            </span>
+          </div>
+          <div className="flex justify-between items-center">
+            <span className="text-[#8a8292]">GHOST RIG [G]:</span>
+            <span className={state.isGhostVisible ? 'text-cyan-400 font-bold' : 'text-[#6e6878]'}>
+              {state.isGhostVisible ? 'WIREFRAME ON' : 'HIDDEN'}
+            </span>
+          </div>
+          {state.isWeaponBlocked && (
+            <div className="text-rose-400 font-bold text-center bg-rose-950/60 py-0.5 rounded border border-rose-800 animate-pulse">
+              BLADE BLOCKED (SPRING DEFLECTION)
+            </div>
+          )}
         </div>
       </div>
     </div>

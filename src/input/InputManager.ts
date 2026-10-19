@@ -73,6 +73,8 @@ export class InputManager {
 
   public onFootworkDodge?: () => void;
   public onLockToggle?: () => void;
+  public onRagdollToggle?: () => void;
+  public onGhostToggle?: () => void;
   public onUserInteraction?: () => void;
 
   private boundMouseMove: (e: MouseEvent) => void;
@@ -214,6 +216,20 @@ export class InputManager {
       e.preventDefault();
       this.bufferAction('lock_toggle', undefined, 150);
       this.onLockToggle?.();
+      return;
+    }
+
+    // Active Ragdoll Toggle: R key
+    if (code === 'KeyR') {
+      e.preventDefault();
+      this.onRagdollToggle?.();
+      return;
+    }
+
+    // Ghost Rig Wireframe Visibility Toggle: G key
+    if (code === 'KeyG') {
+      e.preventDefault();
+      this.onGhostToggle?.();
       return;
     }
 
