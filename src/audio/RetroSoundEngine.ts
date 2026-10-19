@@ -177,6 +177,56 @@ export class RetroSoundEngine {
     osc.stop(now + (isDash ? 0.13 : 0.08));
   }
 
+  /**
+   * Classic retro 2-tone chime on locking/unlocking target
+   */
+  public playLockTone(engaged: boolean): void {
+    if (!this.initialized || !this.ctx || !this.masterGain || this.isMuted) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sine';
+
+    if (engaged) {
+      // Ascending major chime
+      osc.frequency.setValueAtTime(520, now);
+      osc.frequency.setValueAtTime(784, now + 0.05);
+    } else {
+      // Descending release chime
+      osc.frequency.setValueAtTime(640, now);
+      osc.frequency.setValueAtTime(392, now + 0.05);
+    }
+
+    gain.gain.setValueAtTime(0.18, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.17);
+  }
+
+  /**
+   * Crisp airy whoosh when canceling recovery into dodge or block
+   */
+  public playCancelWhoosh(): void {
+    if (!this.initialized || !this.ctx || !this.masterGain || this.isMuted) return;
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(360, now);
+    osc.frequency.exponentialRampToValueAtTime(110, now + 0.1);
+
+    gain.gain.setValueAtTime(0.15, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
+
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.12);
+  }
+
   public dispose(): void {
     if (this.ctx) {
       try {

@@ -87,3 +87,35 @@ test('recognizeGestureType classifies drag directions into strikes', () => {
   // Horizontal cleave
   assert.equal(recognizeGestureType(0.05, 0.35, 'mid'), 'cleave');
 });
+
+test('STRIKE_PHASES contains valid Startup, Active, and Recovery timing windows', async () => {
+  const { STRIKE_PHASES } = await import('../config/combatConfig.ts');
+  const modes = ['cleave', 'overhead', 'undercut', 'thrust'] as const;
+
+  for (const mode of modes) {
+    const timing = STRIKE_PHASES[mode];
+    assert.ok(timing.startup > 0, `${mode} startup should be > 0`);
+    assert.ok(timing.active > 0, `${mode} active should be > 0`);
+    assert.ok(timing.recovery > 0, `${mode} recovery should be > 0`);
+    const expectedTotal = Math.round((timing.startup + timing.active + timing.recovery) * 100) / 100;
+    assert.equal(timing.total, expectedTotal, `${mode} total should equal sum of phases`);
+  }
+});
+
+test('Target-Lock strafe tangent vectors are strictly perpendicular to radial target vector', () => {
+  // Dummy at origin (0, 0), Knight at (0, 2)
+  const toDummyX = 0 - 0;
+  const toDummyZ = 0 - 2;
+  const dist = Math.hypot(toDummyX, toDummyZ);
+  const fX = toDummyX / dist; // (0, -1)
+  const fZ = toDummyZ / dist;
+  const rX = fZ;              // (-1, 0)
+  const rZ = -fX;
+
+  // Dot product of forward and right tangent must be 0 (perpendicular)
+  const dot = fX * rX + fZ * rZ;
+  assert.equal(Math.abs(dot), 0, 'Strafe right vector must be orthogonal to forward toDummy vector');
+  // Length of unit vectors must be 1
+  assert.equal(Math.round(Math.hypot(fX, fZ)), 1);
+  assert.equal(Math.round(Math.hypot(rX, rZ)), 1);
+});

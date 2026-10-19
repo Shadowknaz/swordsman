@@ -5,7 +5,7 @@
 
 import React from 'react';
 import { EngineUIState } from '../engine/GameEngine.ts';
-import { Shield, Zap, Activity, Compass } from 'lucide-react';
+import { Shield, Zap, Activity, Compass, Target, Crosshair, FastForward } from 'lucide-react';
 
 interface CombatHUDProps {
   state: EngineUIState | null;
@@ -32,14 +32,29 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({ state }) => {
   return (
     <div className="pointer-events-none absolute inset-x-0 top-0 p-4 md:p-6 flex flex-col md:flex-row justify-between items-start gap-4 select-none">
       {/* Top Left: Title, Guard & Poise Indicator */}
-      <div className="bg-[#100e14]/85 border border-[#302c38] p-3 md:p-4 rounded shadow-2xl backdrop-blur-xs min-w-[280px]">
-        <div className="flex items-center justify-between border-b border-[#25222c] pb-2 mb-2">
-          <h1 className="font-medieval text-sm md:text-base font-bold tracking-widest text-[#e8dfc8]">
-            EXANIMA PS1
-          </h1>
-          <span className="text-[10px] tracking-wider px-1.5 py-0.5 rounded bg-[#1f1c24] text-[#a49ba8] border border-[#35313d]">
-            PHYSICS V2.4
-          </span>
+      <div className="bg-[#100e14]/85 border border-[#302c38] p-3 md:p-4 rounded shadow-2xl backdrop-blur-xs min-w-[290px]">
+        <div className="flex items-center justify-between border-b border-[#25222c] pb-2 mb-2 gap-2">
+          <div className="flex items-center gap-2">
+            <h1 className="font-medieval text-sm md:text-base font-bold tracking-widest text-[#e8dfc8]">
+              EXANIMA PS1
+            </h1>
+            <span className="text-[9px] tracking-wider px-1.5 py-0.5 rounded bg-[#1f1c24] text-[#a49ba8] border border-[#35313d]">
+              PHYSICS V2.5
+            </span>
+          </div>
+
+          {/* Target Lock Badge */}
+          {state.isTargetLocked ? (
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-600/70 flex items-center gap-1 animate-pulse">
+              <Target className="w-3 h-3 text-amber-400" />
+              LOCK-ON [QUINTAIN]
+            </span>
+          ) : (
+            <span className="text-[10px] px-2 py-0.5 rounded bg-[#1a1722] text-[#8e8597] border border-[#302a3a] flex items-center gap-1">
+              <Crosshair className="w-3 h-3 text-[#797083]" />
+              FREE-AIM [F/Q]
+            </span>
+          )}
         </div>
 
         {/* Guard & Chamber */}
@@ -61,6 +76,46 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({ state }) => {
             </span>
             <span className="font-semibold text-[#c8d4e6]">{chamberLabel}</span>
           </div>
+
+          {/* Animation Phase & Cancel Window */}
+          <div className="flex items-center justify-between text-[#8a8292] pt-0.5">
+            <span className="flex items-center gap-1.5">
+              <FastForward className="w-3.5 h-3.5 text-[#60a5fa]" />
+              ANIM PHASE:
+            </span>
+            <div>
+              {state.attackPhase === 'startup' && (
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-yellow-950/70 text-yellow-400 border border-yellow-600">
+                  STARTUP (WIND-UP)
+                </span>
+              )}
+              {state.attackPhase === 'active' && (
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-950/80 text-rose-300 border border-rose-600 animate-pulse">
+                  ACTIVE (STRIKE!)
+                </span>
+              )}
+              {state.attackPhase === 'recovery' && (
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-cyan-950/80 text-cyan-300 border border-cyan-500 animate-pulse">
+                  RECOVERY (DODGE/GUARD CANCEL)
+                </span>
+              )}
+              {state.attackPhase === 'idle' && (
+                <span className="text-[10px] font-semibold text-[#a49ba8]">
+                  READY
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Input Buffering Indicator */}
+          {state.bufferedAction && (
+            <div className="flex items-center justify-between text-[11px] bg-[#1a1728] px-2 py-0.5 rounded border border-indigo-700/60 text-indigo-300">
+              <span>INPUT QUEUE (150ms):</span>
+              <span className="font-mono font-bold animate-pulse text-indigo-200">
+                {state.bufferedAction} QUEUED
+              </span>
+            </div>
+          )}
 
           {/* Poise / Balance Stability Bar */}
           <div className="pt-1.5">

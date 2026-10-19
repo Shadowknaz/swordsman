@@ -65,6 +65,16 @@ export class CombatResolver {
       return;
     }
 
+    // Startup phase is windup chamber: weapon is not yet dealing damage
+    if (this.hero.attackPhase === 'startup') {
+      return;
+    }
+
+    // Recovery phase: swing has finished its damage window, now recovering
+    if (this.hero.attackPhase === 'recovery') {
+      return;
+    }
+
     const safeDt = Math.max(0.002, dt);
     this.dummy.group.updateMatrixWorld(true);
 

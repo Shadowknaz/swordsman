@@ -52,6 +52,14 @@ export class VFXManager {
   // Screen shake
   public screenShake = 0;
 
+  // Z-Targeting Lock-On Reticle
+  public lockReticleGroup: THREE.Group;
+  private lockRingMesh: THREE.Mesh;
+  private lockChevron: THREE.Mesh;
+  private lockBrackets: THREE.Mesh[] = [];
+
+  private cancelMat: THREE.Material;
+
   constructor(scene: THREE.Scene) {
     this.scene = scene;
 
@@ -59,6 +67,7 @@ export class VFXManager {
     this.woodMat = applyPS1MaterialShader(new THREE.MeshBasicMaterial({ color: 0xc89d66 }));
     this.metalMat = applyPS1MaterialShader(new THREE.MeshBasicMaterial({ color: 0xffdd77 }));
     this.flatHitMat = applyPS1MaterialShader(new THREE.MeshBasicMaterial({ color: 0x99aabb }));
+    this.cancelMat = applyPS1MaterialShader(new THREE.MeshBasicMaterial({ color: 0x38bdf8 }));
 
     // Particle pool
     const sharedParticleGeo = new THREE.BoxGeometry(0.06, 0.06, 0.06);
@@ -115,6 +124,49 @@ export class VFXManager {
     this.cursorStanceTick.position.set(0, 0.026, 0);
     this.cursorMarker.add(this.cursorStanceTick);
     this.scene.add(this.cursorMarker);
+
+    // Z-Targeting Lock Reticle Assembly (Retro Zelda / Souls style)
+    this.lockReticleGroup = new THREE.Group();
+    this.lockReticleGroup.visible = false;
+
+    // Outer rotating diamond / ring
+    const lockRingGeo = new THREE.RingGeometry(0.32, 0.38, 4); // 4-gon = diamond
+    const lockMat = new THREE.MeshBasicMaterial({
+      color: 0xf59e0b,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.9,
+    });
+    this.lockRingMesh = new THREE.Mesh(lockRingGeo, lockMat);
+    this.lockRingMesh.rotation.x = -Math.PI * 0.5;
+    this.lockReticleGroup.add(this.lockRingMesh);
+
+    // 4 Corner Brackets
+    const bracketGeo = new THREE.BoxGeometry(0.12, 0.02, 0.03);
+    const bracketMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
+    const offsets = [
+      { x: 0.38, z: 0 },
+      { x: -0.38, z: 0 },
+      { x: 0, z: 0.38 },
+      { x: 0, z: -0.38 },
+    ];
+    offsets.forEach((off) => {
+      const b = new THREE.Mesh(bracketGeo, bracketMat);
+      b.position.set(off.x, 0, off.z);
+      if (off.z !== 0) b.rotation.y = Math.PI * 0.5;
+      this.lockReticleGroup.add(b);
+      this.lockBrackets.push(b);
+    });
+
+    // Floating downward chevron arrow
+    const chevronGeo = new THREE.ConeGeometry(0.14, 0.28, 4);
+    chevronGeo.rotateX(Math.PI);
+    const chevronMat = new THREE.MeshBasicMaterial({ color: 0xfbbf24 });
+    this.lockChevron = new THREE.Mesh(chevronGeo, chevronMat);
+    this.lockChevron.position.set(0, 0.32, 0);
+    this.lockReticleGroup.add(this.lockChevron);
+
+    this.scene.add(this.lockReticleGroup);
 
     this.initTrail();
   }
@@ -328,6 +380,60 @@ export class VFXManager {
     } else {
       this.cursorStanceTick.rotation.y = heroAngle + stanceSide * 0.35;
       this.cursorStanceTick.scale.set(1.35, 1, 0.9);
+    }
+  }
+
+  public updateTargetLockReticle(dummyPos: THREE.Vector3, isLocked: boolean, elapsed: number): void {
+    if (!this.lockReticleGroup) return;
+    this.lockReticleGroup.visible = isLocked;
+    if (!isLocked) return;
+
+    // Position above the dummy
+    this.lockReticleGroup.position.set(dummyPos.x, dummyPos.y + 2.2, dummyPos.z);
+
+    // Dynamic retro pulse & rotation
+    const pulse = 1.0 + Math.sin(elapsed * 7.0) * 0.12;
+    this.lockRingMesh.rotation.z = elapsed * 2.5;
+    this.lockRingMesh.scale.set(pulse, pulse, pulse);
+
+    // Chevron bobbing
+    if (this.lockChevron) {
+      this.lockChevron.position.y = 0.38 + Math.sin(elapsed * 9.0) * 0.08;
+      this.lockChevron.rotation.y = elapsed * 3.0;
+    }
+
+    // Bracket inward snap pulse
+    const bracketDist = 0.34 + Math.cos(elapsed * 7.0) * 0.05;
+    if (this.lockBrackets.length === 4) {
+      this.lockBrackets[0].position.set(bracketDist, 0, 0);
+      this.lockBrackets[1].position.set(-bracketDist, 0, 0);
+      this.lockBrackets[2].position.set(0, 0, bracketDist);
+      this.lockBrackets[3].position.set(0, 0, -bracketDist);
+    }
+  }
+
+  /**
+   * Spawns a sharp burst of cyan cancel particles and a brief flash when animation cancel occurs
+   */
+  public triggerCancelFlash(worldPos: THREE.Vector3): void {
+    this.triggerScreenShake(0.04);
+    let spawned = 0;
+    for (let i = 0; i < VFX_CONFIG.PARTICLE_POOL_SIZE && spawned < 6; i++) {
+      const p = this.particlePool[i];
+      if (p.life <= 0) {
+        p.mesh.material = this.cancelMat;
+        p.mesh.position.set(
+          worldPos.x + (Math.random() - 0.5) * 0.3,
+          worldPos.y + 0.8 + (Math.random() - 0.5) * 0.3,
+          worldPos.z + (Math.random() - 0.5) * 0.3
+        );
+        p.mesh.visible = true;
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 2.4 + Math.random() * 2.0;
+        p.vel.set(Math.cos(angle) * speed, 1.2 + Math.random() * 2.0, Math.sin(angle) * speed);
+        p.life = 0.22 + Math.random() * 0.12;
+        spawned++;
+      }
     }
   }
 

@@ -5,7 +5,7 @@
  */
 
 import * as THREE from 'three';
-import { HERO_CONFIG, ARENA_CONFIG } from '../config/combatConfig.ts';
+import { HERO_CONFIG, ARENA_CONFIG, AttackPhase, STRIKE_PHASES } from '../config/combatConfig.ts';
 import {
   applyPS1MaterialShader,
   applyVertexAO,
@@ -17,7 +17,7 @@ import {
   createBurlapTexture,
   createBlobShadowTexture,
 } from '../rendering/proceduralTextures.ts';
-import { normalizeAngle, GuardZone } from '../physics/combatMath.ts';
+import { normalizeAngle, GuardZone, StrikeMode } from '../physics/combatMath.ts';
 
 export class Hero {
   public group = new THREE.Group();
@@ -65,6 +65,15 @@ export class Hero {
   public torsoTwist = 0;
   public torsoLean = 0;
   public hitCooldown = 0;
+
+  // Strike Phases & Animation Canceling (Startup -> Active -> Recovery)
+  public attackPhase: AttackPhase = 'idle';
+  public phaseTimer = 0;
+  public activeStrikeMode: StrikeMode = 'none';
+  public activeStrikePower = 1.0;
+  public activeStrikeDir = 1;
+  public cancelFlashTimer = 0;
+  public onAnimationCanceled?: (reason: 'dodge' | 'guard') => void;
 
   // Blade positions in local space
   public readonly swordBaseLocal = new THREE.Vector3(
@@ -331,11 +340,99 @@ export class Hero {
     this.prevTipWorld.copy(this.currTipWorld);
   }
 
-  public triggerFootworkDodge(keys: { w: boolean; a: boolean; s: boolean; d: boolean }, isAttacking: boolean): void {
-    if (this.dashCooldown > 0 || this.stumbleTimer > 0.12) return;
+  public isCancelable(): boolean {
+    return this.attackPhase === 'recovery';
+  }
 
-    this._forwardVec.set(-Math.sin(this.angle), 0, -Math.cos(this.angle));
-    this._rightVec.set(Math.cos(this.angle), 0, -Math.sin(this.angle));
+  public startStrike(mode: StrikeMode, power: number, dirSign = 1): void {
+    this.attackPhase = 'startup';
+    this.phaseTimer = 0;
+    this.activeStrikeMode = mode;
+    this.activeStrikePower = power;
+    this.activeStrikeDir = dirSign;
+  }
+
+  public cancelAttack(reason: 'dodge' | 'guard'): boolean {
+    if (!this.isCancelable()) return false;
+    this.attackPhase = 'idle';
+    this.phaseTimer = 0;
+    this.activeStrikeMode = 'none';
+    this.cancelFlashTimer = 0.22;
+    // Dampen swing velocities on cancel for crisp responsive recovery
+    this.swingYawVel *= 0.18;
+    this.swingPitchVel *= 0.18;
+    this.thrustVel *= 0.12;
+    this.onAnimationCanceled?.(reason);
+    return true;
+  }
+
+  public updateAttackPhase(dt: number): AttackPhase {
+    if (this.cancelFlashTimer > 0) {
+      this.cancelFlashTimer = Math.max(0, this.cancelFlashTimer - dt);
+    }
+
+    if (this.attackPhase === 'idle' || this.activeStrikeMode === 'none') {
+      return 'idle';
+    }
+
+    this.phaseTimer += dt;
+    const timing = STRIKE_PHASES[this.activeStrikeMode] || STRIKE_PHASES.cleave;
+
+    if (this.attackPhase === 'startup') {
+      if (this.phaseTimer >= timing.startup) {
+        this.attackPhase = 'active';
+      }
+    } else if (this.attackPhase === 'active') {
+      if (this.phaseTimer >= timing.startup + timing.active) {
+        this.attackPhase = 'recovery';
+      }
+    } else if (this.attackPhase === 'recovery') {
+      if (this.phaseTimer >= timing.total) {
+        this.attackPhase = 'idle';
+        this.activeStrikeMode = 'none';
+        this.phaseTimer = 0;
+      }
+    }
+
+    return this.attackPhase;
+  }
+
+  public triggerFootworkDodge(
+    keys: { w: boolean; a: boolean; s: boolean; d: boolean },
+    isAttacking: boolean,
+    isTargetLocked = false,
+    dummyPos?: THREE.Vector3
+  ): boolean {
+    // Animation Canceling: Recovery phase can be canceled into a dodge!
+    if (this.isCancelable()) {
+      this.cancelAttack('dodge');
+    } else if (this.attackPhase === 'startup' || this.attackPhase === 'active') {
+      // Locked in startup windup or active swing
+      return false;
+    }
+
+    if (this.dashCooldown > 0 || this.stumbleTimer > 0.12) return false;
+
+    let fX: number, fZ: number, rX: number, rZ: number;
+
+    if (isTargetLocked && dummyPos) {
+      // In Z-Targeting mode: forward is towards dummy, right is tangent around dummy
+      const toDummyX = dummyPos.x - this.pos.x;
+      const toDummyZ = dummyPos.z - this.pos.z;
+      const dist = Math.hypot(toDummyX, toDummyZ) || 1.0;
+      fX = toDummyX / dist;
+      fZ = toDummyZ / dist;
+      rX = fZ;
+      rZ = -fX;
+    } else {
+      fX = -Math.sin(this.angle);
+      fZ = -Math.cos(this.angle);
+      rX = Math.cos(this.angle);
+      rZ = -Math.sin(this.angle);
+    }
+
+    this._forwardVec.set(fX, 0, fZ);
+    this._rightVec.set(rX, 0, rZ);
 
     let moveF = 0;
     let moveS = 0;
@@ -363,6 +460,7 @@ export class Hero {
     this.dashCooldown = HERO_CONFIG.TIMERS.DASH_COOLDOWN;
     this.dashTimer = HERO_CONFIG.TIMERS.DASH_DURATION;
     this.onFootstep?.(true);
+    return true;
   }
 
   public updateMovement(
@@ -370,7 +468,8 @@ export class Hero {
     keys: { w: boolean; a: boolean; s: boolean; d: boolean },
     mouseWorld: THREE.Vector3,
     dummyPos: THREE.Vector3,
-    isMouseDown: boolean
+    isMouseDown: boolean,
+    isTargetLocked = false
   ): void {
     if (this.stumbleTimer > 0) this.stumbleTimer = Math.max(0, this.stumbleTimer - dt);
     if (this.dashCooldown > 0) this.dashCooldown = Math.max(0, this.dashCooldown - dt);
@@ -384,26 +483,38 @@ export class Hero {
     );
     const stumblePenalty = this.stumbleTimer > 0 ? 0.38 : 1.0;
 
-    // 1. Rotation towards mouse
-    const dx = mouseWorld.x - this.pos.x;
-    const dz = mouseWorld.z - this.pos.z;
-    const targetAngle = Math.atan2(-dx, -dz);
-    const angleDiff = normalizeAngle(targetAngle - this.angle);
+    // 1. Rotation towards target (Lock-On) or mouse (Free-Roam)
+    let angleDiff = 0;
+    if (isTargetLocked) {
+      const toDummyX = dummyPos.x - this.pos.x;
+      const toDummyZ = dummyPos.z - this.pos.z;
+      const targetAngle = Math.atan2(-toDummyX, -toDummyZ);
+      angleDiff = normalizeAngle(targetAngle - this.angle);
 
-    const maxTurnSpeed =
-      (isMouseDown
-        ? HERO_CONFIG.ROTATION.MAX_TURN_SPEED_ATTACK
-        : HERO_CONFIG.ROTATION.MAX_TURN_SPEED_IDLE) *
-      (1.0 - swingIntensity * 0.35) *
-      stumblePenalty;
+      const maxTurnSpeed = 8.5 * (1.0 - swingIntensity * 0.25) * stumblePenalty;
+      const desiredAngVel = Math.max(-maxTurnSpeed, Math.min(maxTurnSpeed, angleDiff * 7.5));
+      this.angVel += (desiredAngVel - this.angVel) * Math.min(1.0, dt * 14.0);
+    } else {
+      const dx = mouseWorld.x - this.pos.x;
+      const dz = mouseWorld.z - this.pos.z;
+      const targetAngle = Math.atan2(-dx, -dz);
+      angleDiff = normalizeAngle(targetAngle - this.angle);
 
-    const desiredAngVel = Math.max(
-      -maxTurnSpeed,
-      Math.min(maxTurnSpeed, angleDiff * 5.2)
-    );
-    this.angVel +=
-      (desiredAngVel - this.angVel) *
-      Math.min(1.0, dt * HERO_CONFIG.ROTATION.TURN_RESPONSE_LERP);
+      const maxTurnSpeed =
+        (isMouseDown
+          ? HERO_CONFIG.ROTATION.MAX_TURN_SPEED_ATTACK
+          : HERO_CONFIG.ROTATION.MAX_TURN_SPEED_IDLE) *
+        (1.0 - swingIntensity * 0.35) *
+        stumblePenalty;
+
+      const desiredAngVel = Math.max(
+        -maxTurnSpeed,
+        Math.min(maxTurnSpeed, angleDiff * 5.2)
+      );
+      this.angVel +=
+        (desiredAngVel - this.angVel) *
+        Math.min(1.0, dt * HERO_CONFIG.ROTATION.TURN_RESPONSE_LERP);
+    }
 
     const swingBodyTorque =
       -this.swingYawVel * HERO_CONFIG.ROTATION.SWING_BODY_TORQUE_FACTOR * dt;
@@ -418,9 +529,25 @@ export class Hero {
     );
     this.head.rotation.y = headYaw;
 
-    // 2. Velocity
-    this._forwardVec.set(-Math.sin(this.angle), 0, -Math.cos(this.angle));
-    this._rightVec.set(Math.cos(this.angle), 0, -Math.sin(this.angle));
+    // 2. Velocity & Strafing
+    if (isTargetLocked) {
+      // In Z-Targeting lock-on mode, movement is oriented around target:
+      // Forward/Back = radial towards/away from dummy
+      // Strafe A/D = tangential orbit around dummy
+      const toDummyX = dummyPos.x - this.pos.x;
+      const toDummyZ = dummyPos.z - this.pos.z;
+      const dDist = Math.hypot(toDummyX, toDummyZ) || 1.0;
+      const fX = toDummyX / dDist;
+      const fZ = toDummyZ / dDist;
+      const rX = fZ;
+      const rZ = -fX;
+
+      this._forwardVec.set(fX, 0, fZ);
+      this._rightVec.set(rX, 0, rZ);
+    } else {
+      this._forwardVec.set(-Math.sin(this.angle), 0, -Math.cos(this.angle));
+      this._rightVec.set(Math.cos(this.angle), 0, -Math.sin(this.angle));
+    }
 
     let moveForward = 0;
     let moveStrafe = 0;

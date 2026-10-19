@@ -24,6 +24,16 @@ export interface GestureState {
   strikeTargetThrust: number;
 }
 
+export type BufferedActionType = 'strike' | 'dodge' | 'thrust' | 'guard' | 'lock_toggle';
+
+export interface BufferedInput {
+  id: number;
+  type: BufferedActionType;
+  timestamp: number;
+  ttlMs: number;
+  data?: Record<string, any>;
+}
+
 export class InputManager {
   public keys = { w: false, a: false, s: false, d: false };
   public mouseNDC = new THREE.Vector2(0, 0);
@@ -39,6 +49,11 @@ export class InputManager {
   private raycaster = new THREE.Raycaster();
   private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private hitPoint = new THREE.Vector3();
+
+  // 100-150ms Input Buffering Queue
+  private actionBuffer: BufferedInput[] = [];
+  private actionIdCounter = 0;
+  public readonly bufferTtlMs = 150;
 
   public gesture: GestureState = {
     active: false,
@@ -57,6 +72,7 @@ export class InputManager {
   };
 
   public onFootworkDodge?: () => void;
+  public onLockToggle?: () => void;
   public onUserInteraction?: () => void;
 
   private boundMouseMove: (e: MouseEvent) => void;
@@ -82,6 +98,79 @@ export class InputManager {
     window.addEventListener('contextmenu', this.boundContextMenu);
   }
 
+  /**
+   * Pushes an intent into the input queue with a 150ms window.
+   */
+  public bufferAction(type: BufferedActionType, data?: Record<string, any>, ttlMs = this.bufferTtlMs): void {
+    const now = performance.now();
+    // Keep buffer lean by removing expired actions
+    this.actionBuffer = this.actionBuffer.filter((act) => now - act.timestamp < act.ttlMs);
+
+    // Replace previous unconsumed identical action with fresh timestamp
+    const existingIdx = this.actionBuffer.findIndex((act) => act.type === type);
+    if (existingIdx !== -1) {
+      this.actionBuffer[existingIdx].timestamp = now;
+      this.actionBuffer[existingIdx].ttlMs = ttlMs;
+      if (data) this.actionBuffer[existingIdx].data = data;
+      return;
+    }
+
+    this.actionBuffer.push({
+      id: ++this.actionIdCounter,
+      type,
+      timestamp: now,
+      ttlMs,
+      data,
+    });
+  }
+
+  /**
+   * Peeks the most relevant buffered action without consuming.
+   */
+  public peekAction(types?: BufferedActionType[]): BufferedInput | null {
+    this.updateBuffer();
+    if (this.actionBuffer.length === 0) return null;
+    if (!types) return this.actionBuffer[0];
+    return this.actionBuffer.find((act) => types.includes(act.type)) || null;
+  }
+
+  /**
+   * Consumes and removes the earliest action matching requested types.
+   */
+  public consumeAction(types?: BufferedActionType[]): BufferedInput | null {
+    this.updateBuffer();
+    if (this.actionBuffer.length === 0) return null;
+
+    if (!types) {
+      return this.actionBuffer.shift() || null;
+    }
+
+    const idx = this.actionBuffer.findIndex((act) => types.includes(act.type));
+    if (idx === -1) return null;
+    const [action] = this.actionBuffer.splice(idx, 1);
+    return action;
+  }
+
+  public hasAction(type: BufferedActionType): boolean {
+    this.updateBuffer();
+    return this.actionBuffer.some((act) => act.type === type);
+  }
+
+  public clearBuffer(): void {
+    this.actionBuffer = [];
+  }
+
+  public updateBuffer(): void {
+    const now = performance.now();
+    this.actionBuffer = this.actionBuffer.filter((act) => now - act.timestamp < act.ttlMs);
+  }
+
+  public getBufferedActionSummary(): string | null {
+    this.updateBuffer();
+    if (this.actionBuffer.length === 0) return null;
+    return this.actionBuffer[this.actionBuffer.length - 1].type.toUpperCase();
+  }
+
   private handleMouseMove(e: MouseEvent): void {
     this.mouseNDC.x = (e.clientX / window.innerWidth) * 2 - 1;
     this.mouseNDC.y = -(e.clientY / window.innerHeight) * 2 + 1;
@@ -92,8 +181,14 @@ export class InputManager {
     if (e.button === 0) {
       this.lmbDown = true;
     }
+    if (e.button === 1) {
+      // Middle mouse click toggles Z-Targeting
+      e.preventDefault();
+      this.onLockToggle?.();
+    }
     if (e.button === 2) {
       this.rmbDown = true;
+      this.bufferAction('guard', undefined, 120);
     }
   }
 
@@ -114,8 +209,18 @@ export class InputManager {
     if (code === 'KeyA' || code === 'ArrowLeft') this.keys.a = true;
     if (code === 'KeyD' || code === 'ArrowRight') this.keys.d = true;
 
+    // Z-Targeting / Lock-on toggle keys: F, Q, or Z
+    if (code === 'KeyF' || code === 'KeyQ' || code === 'KeyZ') {
+      e.preventDefault();
+      this.bufferAction('lock_toggle', undefined, 150);
+      this.onLockToggle?.();
+      return;
+    }
+
     if (code === 'Space' || code === 'AltLeft' || code === 'AltRight') {
       e.preventDefault();
+      // Buffer dodge intent so it triggers immediately or as soon as animation enters recovery phase
+      this.bufferAction('dodge', { keys: { ...this.keys } }, 150);
       this.onFootworkDodge?.();
     }
   }

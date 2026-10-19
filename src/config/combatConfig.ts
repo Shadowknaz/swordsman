@@ -101,6 +101,35 @@ export const DUMMY_CONFIG = {
   FLAIL_HERO_HIT_RADIUS: 0.58,
 } as const;
 
+export type AttackPhase = 'idle' | 'startup' | 'active' | 'recovery';
+
+export interface StrikePhaseTiming {
+  startup: number;   // Wind-up chamber, cannot be canceled, deals no damage
+  active: number;    // Swept blade damage window, collision active
+  recovery: number;  // Follow-through return to stance, CAN BE CANCELED by dodge or block!
+  total: number;
+}
+
+export const STRIKE_PHASES: Record<string, StrikePhaseTiming> = {
+  cleave: { startup: 0.08, active: 0.16, recovery: 0.22, total: 0.46 },
+  overhead: { startup: 0.12, active: 0.18, recovery: 0.26, total: 0.56 },
+  undercut: { startup: 0.09, active: 0.16, recovery: 0.24, total: 0.49 },
+  thrust: { startup: 0.07, active: 0.15, recovery: 0.20, total: 0.42 },
+  none: { startup: 0, active: 0, recovery: 0, total: 0 },
+};
+
+export const INPUT_BUFFER_CONFIG = {
+  WINDOW_MS: 150, // 100-150ms buffering queue window
+} as const;
+
+export const TARGET_LOCK_CONFIG = {
+  CAM_DISTANCE_OFFSET: 3.2,
+  CAM_HEIGHT: 3.9,
+  CAM_LERP_SPEED: 7.5,
+  RETICLE_Y_OFFSET: 2.15,
+  RETICLE_PULSE_SPEED: 6.0,
+} as const;
+
 export const COMBAT_CONFIG = {
   COLLISION: {
     SWEETSPOT_MASS_KG: 1.45,
@@ -126,7 +155,7 @@ export const COMBAT_CONFIG = {
     UNDERCUT_DRAG_RIGHT_MIN: 0.22,
     THRUST_DRAG_FORWARD_MIN: 0.35,
     THRUST_DRAG_RIGHT_MAX: 0.32,
-    LATERAL_CLEAVE_DRAG_MIN: 0.38,
+    LATERAL_CLEAVE_DRAG_MIN: 0.32,
     QUICK_CLICK_TIME_MS: 260,
   },
   SWORD_SPRINGS: {

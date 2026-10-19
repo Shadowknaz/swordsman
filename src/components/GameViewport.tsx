@@ -1,25 +1,28 @@
-/**
- * Game Viewport Component
- * Mounts the WebGL canvas in a dedicated ref container.
- * Renders pure, immersive full-screen 3D viewport without any 2D UI overlay.
- */
-
-import React, { useEffect, useRef } from 'react';
-import { GameEngine } from '../engine/GameEngine.ts';
+import React, { useEffect, useRef, useState } from 'react';
+import { GameEngine, EngineUIState } from '../engine/GameEngine.ts';
+import { CombatHUD } from './CombatHUD.tsx';
+import { ControlsDock } from './ControlsDock.tsx';
 
 export const GameViewport: React.FC = () => {
   const mountRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<GameEngine | null>(null);
+  const [uiState, setUiState] = useState<EngineUIState | null>(null);
+  const [isMuted, setIsMuted] = useState(false);
 
   useEffect(() => {
     if (!mountRef.current) return;
 
     const engine = new GameEngine(mountRef.current);
     engineRef.current = engine;
+    engine.onStateUpdate = (state) => {
+      setUiState(state);
+    };
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'KeyM') {
-        engine.audio.setMuted(!engine.audio.getMuted());
+        const next = !engine.audio.getMuted();
+        engine.audio.setMuted(next);
+        setIsMuted(next);
       }
       if (e.code === 'KeyR') {
         engine.resetDummy();
@@ -35,13 +38,40 @@ export const GameViewport: React.FC = () => {
     };
   }, []);
 
+  const handleToggleMute = () => {
+    if (!engineRef.current) return;
+    const next = !engineRef.current.audio.getMuted();
+    engineRef.current.audio.setMuted(next);
+    setIsMuted(next);
+  };
+
+  const handleResetDummy = () => {
+    engineRef.current?.resetDummy();
+  };
+
+  const handleToggleTargetLock = () => {
+    engineRef.current?.toggleTargetLock();
+  };
+
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#22202a]">
-      {/* Pure, immersive 3D WebGL canvas container */}
+      {/* 3D WebGL canvas container */}
       <div
         ref={mountRef}
-        className="w-full h-full cursor-none focus:outline-hidden"
+        className="w-full h-full focus:outline-hidden"
         data-testid="threejs-canvas-viewport"
+      />
+
+      {/* Combat HUD telemetry and stance display */}
+      <CombatHUD state={uiState} />
+
+      {/* Collapsible bottom controls dock */}
+      <ControlsDock
+        isMuted={isMuted}
+        onToggleMute={handleToggleMute}
+        onResetDummy={handleResetDummy}
+        isTargetLocked={uiState?.isTargetLocked ?? false}
+        onToggleTargetLock={handleToggleTargetLock}
       />
     </div>
   );

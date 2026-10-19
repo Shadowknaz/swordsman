@@ -6,7 +6,7 @@
 
 import * as THREE from 'three';
 import { RENDERING_CONFIG } from '../config/renderingConfig.ts';
-import { COMBAT_CONFIG } from '../config/combatConfig.ts';
+import { COMBAT_CONFIG, AttackPhase, STRIKE_PHASES, TARGET_LOCK_CONFIG } from '../config/combatConfig.ts';
 import { Arena } from '../entities/Arena.ts';
 import { Hero } from '../entities/Hero.ts';
 import { TrainingDummy } from '../entities/TrainingDummy.ts';
@@ -31,6 +31,10 @@ export interface EngineUIState {
   strikeMode: StrikeMode;
   lastHit: CombatHitTelemetry | null;
   flailSpinSpeed: number;
+  isTargetLocked: boolean;
+  attackPhase: AttackPhase;
+  isCancelable: boolean;
+  bufferedAction: string | null;
 }
 
 export class GameEngine {
@@ -58,6 +62,8 @@ export class GameEngine {
   public onStateUpdate?: (state: EngineUIState) => void;
   private lastTelemetry: CombatHitTelemetry | null = null;
   private stateUpdateThrottle = 0;
+
+  public isTargetLocked = false;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -112,11 +118,15 @@ export class GameEngine {
       this.lastTelemetry = telemetry;
     };
 
-    // Link input callbacks
+    // Link input & animation cancel callbacks
     this.input.onUserInteraction = () => this.audio.init();
-    this.input.onFootworkDodge = () =>
-      this.hero.triggerFootworkDodge(this.input.keys, this.input.lmbDown || this.input.rmbDown);
+    this.input.onLockToggle = () => this.toggleTargetLock();
+    this.input.onFootworkDodge = () => this.tryDodge();
     this.hero.onFootstep = (isDash) => this.audio.playStep(isDash);
+    this.hero.onAnimationCanceled = () => {
+      this.vfx.triggerCancelFlash(this.hero.pos);
+      this.audio.playCancelWhoosh();
+    };
 
     // Resize listener
     window.addEventListener('resize', this.onResize);
@@ -155,6 +165,27 @@ export class GameEngine {
     }
   }
 
+  public toggleTargetLock(): void {
+    this.isTargetLocked = !this.isTargetLocked;
+    this.audio.playLockTone(this.isTargetLocked);
+    this.vfx.triggerScreenShake(0.02);
+  }
+
+  public tryDodge(): boolean {
+    const isAttacking = this.input.lmbDown || this.input.rmbDown;
+    const dodged = this.hero.triggerFootworkDodge(
+      this.input.keys,
+      isAttacking,
+      this.isTargetLocked,
+      this.dummy.pos
+    );
+    if (dodged) {
+      this.input.consumeAction(['dodge']);
+      return true;
+    }
+    return false;
+  }
+
   private tick = (now: number): void => {
     if (!this.isRunning) return;
     this.animationFrameId = requestAnimationFrame(this.tick);
@@ -163,9 +194,16 @@ export class GameEngine {
     this.lastTime = now;
     const elapsed = now * 0.001;
 
-    // 1. Inputs
+    // 1. Inputs & Buffer
     this.input.updateRaycast(this.camera);
     this.input.updateVelocities(dt);
+    this.input.updateBuffer();
+
+    // Check buffered lock-on toggle
+    if (this.input.consumeAction(['lock_toggle'])) {
+      this.toggleTargetLock();
+    }
+
     if (this.vfx.cursorMarker) {
       this.vfx.cursorMarker.position.set(
         this.input.mouseWorld.x,
@@ -174,27 +212,55 @@ export class GameEngine {
       );
     }
 
+    // 2. Advance Attack Phase (Startup -> Active -> Recovery -> Idle)
+    this.hero.updateAttackPhase(dt);
+
+    // 3. Process Input Buffering & Animation Canceling
+    // A. Buffered Dodge (triggers immediately if idle or recovery cancelable)
+    if (this.input.peekAction(['dodge']) && (this.hero.attackPhase === 'idle' || this.hero.isCancelable())) {
+      this.tryDodge();
+    }
+
+    // B. Recovery cancellation into Guard/Block (RMB or buffered guard)
+    if (this.hero.isCancelable() && (this.input.rmbDown || this.input.consumeAction(['guard']))) {
+      this.hero.cancelAttack('guard');
+    }
+
+    // C. Buffered Strike combo chaining (fires immediately when hero enters idle)
+    if (this.hero.attackPhase === 'idle' && this.hero.stumbleTimer <= 0) {
+      const bufferedStrike = this.input.consumeAction(['strike']);
+      if (bufferedStrike && bufferedStrike.data?.mode) {
+        this.fireSwordStrike(
+          bufferedStrike.data.mode,
+          bufferedStrike.data.power || 1.1,
+          bufferedStrike.data.dirSign ?? 1
+        );
+      }
+    }
+
     // Gesture State updates
     this.updateGestureLogic(dt);
 
-    // 2. Hero Movement & Rotation
+    // 4. Hero Movement & Rotation (with Z-Targeting strafing)
     this.hero.updateMovement(
       dt,
       this.input.keys,
       this.input.mouseWorld,
       this.dummy.pos,
-      this.input.lmbDown
+      this.input.lmbDown,
+      this.isTargetLocked
     );
 
-    // 3. Sword Kinematics
+    // 5. Sword Kinematics
     this.updateSwordKinematics(dt);
 
-    // 4. Dummy Physics & Flail
+    // 6. Dummy Physics & Flail
     this.dummy.update(dt);
     this.combat.checkFlailCounterStrike();
 
-    // 5. VFX & Audio
+    // 7. VFX & Audio
     this.vfx.updateParticles(dt);
+    this.vfx.updateTargetLockReticle(this.dummy.pos, this.isTargetLocked, elapsed);
     const tipSpeed = this.hero.getTipSpeed(dt);
     this.vfx.updateSwordTrail(this.hero.currTipWorld, this.hero.currMidWorld, tipSpeed);
     this.audio.updateSwordWhoosh(tipSpeed);
@@ -209,17 +275,17 @@ export class GameEngine {
       this.hero.stanceSide
     );
 
-    // 6. Arena Environment & Camera
+    // 8. Arena Environment & Camera (PS1 Z-Targeting / Free-Roam)
     this.arena.update(dt, elapsed);
     this.updateCamera(dt);
 
-    // 7. Render
+    // 9. Render
     this.input.lateUpdate();
     this.renderer.render(this.scene, this.camera);
 
-    // 8. Throttled UI State Emission (every ~60ms to keep React 100% lightweight)
+    // 10. Throttled UI State Emission (every ~50ms to keep React 100% lightweight)
     this.stateUpdateThrottle += dt;
-    if (this.stateUpdateThrottle > 0.06) {
+    if (this.stateUpdateThrottle > 0.05) {
       this.stateUpdateThrottle = 0;
       this.emitUIState();
     }
@@ -271,19 +337,36 @@ export class GameEngine {
         if (recognized) {
           const power = 1.1 + Math.hypot(dragForward, dragRight) * 0.4;
           const dir = dragRight !== 0 ? -Math.sign(dragRight) : -this.hero.stanceSide;
-          this.fireSwordStrike(recognized, power, dir);
+          if (this.hero.attackPhase === 'startup' || this.hero.attackPhase === 'active') {
+            this.input.bufferAction('strike', { mode: recognized, power, dirSign: dir });
+          } else {
+            this.fireSwordStrike(recognized, power, dir);
+          }
         } else if (performance.now() - gesture.startTime < COMBAT_CONFIG.GESTURES.QUICK_CLICK_TIME_MS) {
           // Quick click
+          let quickMode: StrikeMode = 'cleave';
+          let quickPower = 1.08;
+          let quickDir = -this.hero.stanceSide;
           if (gesture.chamberType === 'high') {
-            this.fireSwordStrike('overhead', 1.12, 1);
+            quickMode = 'overhead';
+            quickPower = 1.12;
+            quickDir = 1;
           } else if (gesture.chamberType === 'low') {
             if (Math.abs(gesture.startLocalAngle) < 0.42) {
-              this.fireSwordStrike('thrust', 1.18, 1);
+              quickMode = 'thrust';
+              quickPower = 1.18;
+              quickDir = 1;
             } else {
-              this.fireSwordStrike('undercut', 1.12, -this.hero.stanceSide);
+              quickMode = 'undercut';
+              quickPower = 1.12;
+              quickDir = -this.hero.stanceSide;
             }
+          }
+
+          if (this.hero.attackPhase === 'startup' || this.hero.attackPhase === 'active') {
+            this.input.bufferAction('strike', { mode: quickMode, power: quickPower, dirSign: quickDir });
           } else {
-            this.fireSwordStrike('cleave', 1.08, -this.hero.stanceSide);
+            this.fireSwordStrike(quickMode, quickPower, quickDir);
           }
         }
       }
@@ -295,11 +378,21 @@ export class GameEngine {
   }
 
   private fireSwordStrike(mode: StrikeMode, power: number, dirSign = 1): void {
+    if (this.hero.stumbleTimer > 0) return;
+
+    // Animation Canceling / Combo Chaining: If hero is in recovery, cancel recovery into new strike!
+    if (this.hero.isCancelable()) {
+      this.hero.cancelAttack('dodge'); // resets phase cleanly
+    }
+
     const clampedPower = Math.min(1.65, Math.max(0.65, power));
     const { gesture } = this.input;
     gesture.discharged = true;
     gesture.strikeMode = mode;
-    gesture.strikeTimer = 0.28;
+    const phaseTiming = STRIKE_PHASES[mode] || STRIKE_PHASES.cleave;
+    gesture.strikeTimer = phaseTiming.total;
+
+    this.hero.startStrike(mode, clampedPower, dirSign);
 
     if (mode === 'overhead') {
       this.hero.swingPitch = Math.max(this.hero.swingPitch, 0.95);
@@ -490,18 +583,45 @@ export class GameEngine {
   }
 
   private updateCamera(dt: number): void {
-    const focusX = this.hero.pos.x * 0.55 + this.dummy.pos.x * 0.45;
-    const focusZ = this.hero.pos.z * 0.55 + this.dummy.pos.z * 0.45;
-
     const shake = this.vfx.updateScreenShake(dt);
 
-    this.desiredCamPos.set(
-      focusX + shake.x,
-      6.6 + shake.y,
-      focusZ + 5.6
-    );
-    this.camera.position.lerp(this.desiredCamPos, Math.min(1.0, dt * 6.0));
-    this.camera.lookAt(focusX, 0.75, focusZ - 0.2);
+    if (this.isTargetLocked) {
+      // Retro Z-Targeting Lock-On Camera:
+      // Position camera behind hero along the target vector, keeping both combatants framed
+      const toHeroX = this.hero.pos.x - this.dummy.pos.x;
+      const toHeroZ = this.hero.pos.z - this.dummy.pos.z;
+      const dist = Math.hypot(toHeroX, toHeroZ) || 1.0;
+      const dirX = toHeroX / dist;
+      const dirZ = toHeroZ / dist;
+
+      const camDist = dist + TARGET_LOCK_CONFIG.CAM_DISTANCE_OFFSET;
+      const camHeight = TARGET_LOCK_CONFIG.CAM_HEIGHT;
+
+      this.desiredCamPos.set(
+        this.dummy.pos.x + dirX * camDist + shake.x,
+        camHeight + shake.y,
+        this.dummy.pos.z + dirZ * camDist
+      );
+
+      this.camera.position.lerp(this.desiredCamPos, Math.min(1.0, dt * TARGET_LOCK_CONFIG.CAM_LERP_SPEED));
+
+      // Look slightly above the centroid between knight and training dummy
+      const lookFocusX = this.hero.pos.x * 0.42 + this.dummy.pos.x * 0.58;
+      const lookFocusZ = this.hero.pos.z * 0.42 + this.dummy.pos.z * 0.58;
+      this.camera.lookAt(lookFocusX, 1.05, lookFocusZ);
+    } else {
+      // Standard Free-Roam Isometric Camera
+      const focusX = this.hero.pos.x * 0.55 + this.dummy.pos.x * 0.45;
+      const focusZ = this.hero.pos.z * 0.55 + this.dummy.pos.z * 0.45;
+
+      this.desiredCamPos.set(
+        focusX + shake.x,
+        6.6 + shake.y,
+        focusZ + 5.6
+      );
+      this.camera.position.lerp(this.desiredCamPos, Math.min(1.0, dt * 6.0));
+      this.camera.lookAt(focusX, 0.75, focusZ - 0.2);
+    }
   }
 
   private emitUIState(): void {
@@ -525,6 +645,10 @@ export class GameEngine {
       strikeMode: this.input.gesture.strikeMode,
       lastHit: this.lastTelemetry,
       flailSpinSpeed: Math.round(Math.abs(this.dummy.velTwistY) * 10) / 10,
+      isTargetLocked: this.isTargetLocked,
+      attackPhase: this.hero.attackPhase,
+      isCancelable: this.hero.isCancelable(),
+      bufferedAction: this.input.getBufferedActionSummary(),
     });
   }
 
